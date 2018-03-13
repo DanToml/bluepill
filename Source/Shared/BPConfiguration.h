@@ -66,7 +66,6 @@ typedef NS_ENUM(NSInteger, BPProgram) {
 @property (nonatomic, strong) NSString *configOutputFile;
 @property (nonatomic, strong) NSString *outputDirectory;
 @property (nonatomic, strong) NSString *screenshotsDirectory;
-@property (nonatomic, strong) NSString *simulatorPreferencesFile;
 @property (nonatomic) BOOL headlessMode;
 @property (nonatomic, strong) NSNumber *numSims;
 @property (nonatomic) BOOL listTestsOnly;
@@ -92,6 +91,7 @@ typedef NS_ENUM(NSInteger, BPProgram) {
 @property (nonatomic, strong) NSArray<NSString *> *imagePaths; // The images to be pushed into each simulator.
 
 // These fields are for testing.
+@property (nonatomic) BOOL testing_Environment;
 @property (nonatomic) BOOL testing_CrashAppOnLaunch;
 @property (nonatomic) BOOL testing_HangAppOnLaunch;
 @property (nonatomic) BOOL testing_NoAppWillRun;

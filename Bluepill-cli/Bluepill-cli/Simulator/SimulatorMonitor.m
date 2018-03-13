@@ -25,7 +25,7 @@
 @property (nonatomic, strong) NSString *previousClassName;
 @property (nonatomic, assign) BPExitStatus exitStatus;
 @property (nonatomic, assign) NSUInteger currentOutputId;
-@property (nonatomic, assign) NSUInteger failureCount;
+@property (atomic, assign) NSUInteger failureCount;
 @property (nonatomic, assign) BOOL testsBegan;
 @property (nonatomic, strong) BPConfiguration *config;
 @property (nonatomic, strong) NSMutableSet *executedTests;
@@ -34,6 +34,20 @@
 @end
 
 @implementation SimulatorMonitor
+
+static SimulatorMonitor *monitorSingleton = nil;
+
++ (SimulatorMonitor*)sharedInstanceWithConfig:(BPConfiguration *)config {
+    if (monitorSingleton != nil) {
+       return monitorSingleton;
+    }
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        monitorSingleton = [[self alloc] initWithConfiguration:config];
+    });
+    return monitorSingleton;
+}
+
 
 - (instancetype)initWithConfiguration:(BPConfiguration *)config {
     self = [super init];
@@ -58,25 +72,27 @@
     // Don't overwrite the original start time on secondary attempts
     if ([BPStats sharedStats].cleanRun) {
         [BPStats sharedStats].cleanRun = NO;
-        [[BPStats sharedStats] startTimer:ALL_TESTS];
     }
     [BPUtils printInfo:INFO withString:@"All Tests started."];
 }
 
+- (void)printFailure {
+    NSLog(@"hihi failure count: %ld", self.failureCount);
+}
+
 - (void)onAllTestsEnded {
     self.testsState = Completed;
-
     if (self.failureCount) {
         self.exitStatus = BPExitStatusTestsFailed;
     } else {
         self.exitStatus = BPExitStatusTestsAllPassed;
     }
-    [[BPStats sharedStats] endTimer:ALL_TESTS];
+    NSLog(@"hello1 test state: %ld", self.testsState);
     [BPUtils printInfo:INFO withString:@"All Tests Completed."];
 }
 
 - (void)onTestCaseBeganWithName:(NSString *)testName inClass:(NSString *)testClass {
-    [[BPStats sharedStats] startTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName]];
+    [[BPStats sharedStats] startTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withAttemptNumber:[BPStats sharedStats].attemptNumber];
     self.lastTestCaseStartDate = [NSDate date];
 
     self.testsState = Running;
@@ -85,12 +101,13 @@
     self.currentClassName = testClass;
 
     __weak typeof(self) __self = self;
+    NSLog(@"hi maxTestExecutionTime is: %f", self.maxTestExecutionTime);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.maxTestExecutionTime * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if ([__self.currentTestName isEqualToString:testName] && [__self.currentClassName isEqualToString:testClass] && __self.testsState == Running) {
             [BPUtils printInfo:TIMEOUT withString:@"%10.6fs %@/%@", __self.maxTestExecutionTime, testClass, testName];
             [__self stopTestsWithErrorMessage:@"Test took too long to execute and was aborted." forTestName:testName inClass:testClass];
             __self.exitStatus = BPExitStatusTestTimeout;
-            [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName]];
+            [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withErrorMessage:@"Test took too long to execute and was aborted."];
             [[BPStats sharedStats] addTestRuntimeTimeout];
         }
     });
@@ -110,43 +127,35 @@
     self.previousClassName = self.currentClassName ?: self.previousClassName;
     self.currentTestName = nil;
     self.currentClassName = nil;
-    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName]];
+    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withErrorMessage:@"test case passed"];
+
 }
 
 - (void)onTestCaseFailedWithName:(NSString *)testName inClass:(NSString *)testClass
                           inFile:(NSString *)filePath onLineNumber:(NSUInteger)lineNumber wasException:(BOOL)wasException {
+    
     if (self.config.screenshotsDirectory) {
         [self saveScreenshotForFailedTestWithName:testName inClass:testClass];
     }
 
-    NSDate *currentTime = [NSDate date];
     NSString *fullTestName = [NSString stringWithFormat:@"%@/%@", testClass, testName];
-
-    BOOL additionalFailure = NO;
-    for (NSString *fullName in self.failedTestCases) {
-        if([fullTestName isEqualToString:fullName]) {
-            additionalFailure = YES;
-            break;
-        }
-    }
 
     if (self.failedTestCases == nil) {
         self.failedTestCases = [[NSMutableSet alloc] init];
     }
 
-    [self.failedTestCases addObject:fullTestName];
-
-    [BPUtils printInfo:FAILED withString:@"%@%10.6fs %@",
-     additionalFailure ? @"[ADDITIONAL FAILURE] " : @"",
-     [currentTime timeIntervalSinceDate:self.lastTestCaseStartDate],
-     fullTestName];
-
-    if (additionalFailure) {
+    if ([self.failedTestCases containsObject:fullTestName]) {
+        // We've already logged this test as _failed_, this is an additional 'XCTAssert'
+        // comming from the parser so count it again.
         return;
     }
 
-    self.failureCount++;
+    NSDate *currentTime = [NSDate date];
+    [BPUtils printInfo:FAILED withString:@"%10.6fs %@", [currentTime timeIntervalSinceDate:self.lastTestCaseStartDate], fullTestName];
 
+    [self.failedTestCases addObject:fullTestName];
+
+    self.failureCount++;
     // Passing or failing means that if the simulator crashes later, we shouldn't rerun this test. Unless we've enabled re-running failed tests.
     if (self.config.onlyRetryFailed == NO) {
         [self updateExecutedTestCaseList:testName inClass:testClass];
@@ -155,7 +164,7 @@
     self.previousClassName = self.currentClassName ?: self.previousClassName;
     self.currentTestName = nil;
     self.currentClassName = nil;
-    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName]];
+    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withErrorMessage:@"test failed!"];
     [[BPStats sharedStats] addTestError];
     if (wasException) {
         [[BPStats sharedStats] addTestFailure];
@@ -180,18 +189,79 @@
 }
 
 - (void)onTestSuiteBegan:(NSString *)testSuiteName onDate:(NSDate *)startDate isRoot:(BOOL)isRoot {
-    [[BPStats sharedStats] startTimer:[NSString stringWithFormat:TEST_SUITE_FORMAT, isRoot ? 1 : [BPStats sharedStats].attemptNumber, testSuiteName]];
+    [[BPStats sharedStats] startTimer:[NSString stringWithFormat:TEST_SUITE_FORMAT, isRoot ? 1 : [BPStats sharedStats].attemptNumber, testSuiteName] withAttemptNumber:[BPStats sharedStats].attemptNumber ];
 }
 
 - (void)onTestSuiteEnded:(NSString *)testSuiteName
                   isRoot:(BOOL)isRoot {
-    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_SUITE_FORMAT, isRoot ? 1 : [BPStats sharedStats].attemptNumber, testSuiteName]];
+    [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_SUITE_FORMAT, isRoot ? 1 : [BPStats sharedStats].attemptNumber, testSuiteName] withErrorMessage:@"testSuite ended"];
 }
+
+
+- (void)onAppEnded {
+    NSDate *currentTime = [NSDate date];    
+    __weak typeof(self) __self = self;
+    // App crashed
+    __self.parserState = Completed;
+    if (__self.testsState == Running || __self.testsState == Idle) {
+        if (__self.testsState == Running) {
+            [BPUtils printInfo:CRASH withString:@"%@/%@ crashed app.",
+             (self.currentClassName ?: self.previousClassName),
+             (self.currentTestName ?: self.previousTestName)];
+        } else {
+            assert(__self.testsState == Idle);
+            [BPUtils printInfo:CRASH withString:@"App crashed before tests started."];
+        }
+        [self stopTestsWithErrorMessage:@"App Crashed"
+                            forTestName:(self.currentTestName ?: self.previousTestName)
+                                inClass:(self.currentClassName ?: self.previousClassName)];
+        self.exitStatus = BPExitStatusAppCrashed;
+        [[BPStats sharedStats] addApplicationCrash];
+    }
+    self.lastOutput = currentTime;
+}
+
+
+- (void)onOutputReceived {
+    NSDate *currentTime = [NSDate date];
+    
+    if (self.parserState == Idle) {
+        self.parserState = Running;
+    }
+    
+    self.currentOutputId++; // Increment the Output ID for this instance since we've moved on to the next bit of output
+    
+    __block NSUInteger previousOutputId = self.currentOutputId;
+    __weak typeof(self) __self = self;
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(__self.maxTimeWithNoOutput * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (__self.currentOutputId == previousOutputId && (__self.appState == Running)) {
+            NSString *testClass = (__self.currentClassName ?: __self.previousClassName);
+            NSString *testName = (__self.currentTestName ?: __self.previousTestName);
+            BOOL testsReallyStarted = [self didTestsStart];
+            if (testClass == nil && testName == nil && (__self.appState == Running)) {
+                testsReallyStarted = false;
+                [BPUtils printInfo:ERROR withString:@"It appears that tests have not yet started. The test app has frozen prior to the first test."];
+            } else {
+                [BPUtils printInfo:TIMEOUT withString:@" %10.6fs waiting for output from %@/%@",
+                 __self.maxTimeWithNoOutput, testClass, testName];
+                [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withErrorMessage:[NSString stringWithFormat:@"Test timeout after %10.6fs without any output.", __self.maxTimeWithNoOutput]];
+            }
+            __self.exitStatus = testsReallyStarted ? BPExitStatusTestTimeout : BPExitStatusAppHangsBeforeTestStart;
+            [__self stopTestsWithErrorMessage:@"Timed out waiting for the test to produce output. Test was aborted."
+                                  forTestName:testName
+                                      inClass:testClass];
+            [[BPStats sharedStats] addTestOutputTimeout];
+        }
+    });
+    self.lastOutput = currentTime;
+}
+
+
 
 - (void)onOutputReceived:(NSString *)output {
     NSDate *currentTime = [NSDate date];
 
-    assert(self.parserState != Completed);
     if (self.parserState == Idle) {
         self.parserState = Running;
     }
@@ -201,6 +271,7 @@
     __block NSUInteger previousOutputId = self.currentOutputId;
     __weak typeof(self) __self = self;
 
+    NSLog(@"hello test state: %ld", __self.testsState);
     // App crashed
     if ([output isEqualToString:@"BP_APP_PROC_ENDED"]) {
         __self.parserState = Completed;
@@ -231,10 +302,9 @@
             } else {
                 [BPUtils printInfo:TIMEOUT withString:@" %10.6fs waiting for output from %@/%@",
                  __self.maxTimeWithNoOutput, testClass, testName];
-                [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName]];
+                [[BPStats sharedStats] endTimer:[NSString stringWithFormat:TEST_CASE_FORMAT, [BPStats sharedStats].attemptNumber, testClass, testName] withErrorMessage:[NSString stringWithFormat:@"Test timeout after %10.6fs without any output.", __self.maxTimeWithNoOutput]];
             }
-            // Set exit status before stopping the tests because stopping the tests will set the SimulatorState to Completed
-            __self.exitStatus = testsReallyStarted ? BPExitStatusTestTimeout : BPExitStatusSimulatorCrashed;
+            __self.exitStatus = testsReallyStarted ? BPExitStatusTestTimeout : BPExitStatusAppHangsBeforeTestStart;
             [__self stopTestsWithErrorMessage:@"Timed out waiting for the test to produce output. Test was aborted."
                                   forTestName:testName
                                       inClass:testClass];

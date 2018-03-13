@@ -210,7 +210,7 @@ maxprocs(void)
     }
     while (1) {
         if (interrupted) {
-            if (interrupted >=5) {
+            if (interrupted >=2) {
                 [BPUtils printInfo:ERROR withString:@"You really want to terminate, OK!"];
                 exit(0);
             }
@@ -273,8 +273,8 @@ maxprocs(void)
             }
             [BPUtils printInfo:INFO withString:@"%lu Simulator%s still running. [%@]",
              launchedTasks, launchedTasks == 1 ? "" : "s", listString];
-            [BPUtils printInfo:INFO withString:@"Using %d of %d processes.", numprocs(), maxProcs];
             if (numprocs() > maxProcs * BP_MAX_PROCESSES_PERCENT) {
+                [BPUtils printInfo:INFO withString:@"Using %d of %d processes.", numprocs(), maxProcs];
                 [BPUtils printInfo:WARNING withString:@"!!!The number of processes is more than  %f percent of maxProcs!!! it may fail with error: Unable to boot device due to insufficient system resources. Please check with system admin to restart this node and for proper mainantance routine", BP_MAX_PROCESSES_PERCENT*100];
                 NSDateFormatter *dateFormatter=[[NSDateFormatter alloc] init];
                 [dateFormatter setDateFormat:@"yyyy-MM-dd_HH-mm-ss"];
@@ -310,6 +310,16 @@ maxprocs(void)
         } outputAtPath:outputPath];
     }
 
+    if (self.config.outputDirectory) {
+        NSString *outputPath = [self.config.outputDirectory stringByAppendingPathComponent:@"bluepill.csv"];
+        NSFileManager *fm = [NSFileManager new];
+        if ([fm fileExistsAtPath:outputPath]) {
+            [fm removeItemAtPath:outputPath error:nil];
+        }
+        [BPReportCollector collectCSVFromPath:self.config.outputDirectory onReportCollected:^(NSURL *fileUrl) {
+        } outputAtPath:outputPath];
+    }
+    
     return rc;
 }
 

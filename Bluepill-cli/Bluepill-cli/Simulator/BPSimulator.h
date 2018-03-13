@@ -23,13 +23,12 @@
 @property (nonatomic, assign, readonly) BOOL needsRetry;
 @property (nonatomic, readonly) NSString *UDID;
 @property (nonatomic, strong) SimDevice *device;
-@property (nonatomic, strong) NSURL *preferencesFile;
 
 + (instancetype)simulatorWithConfiguration:(BPConfiguration *)config;
 
 - (void)createSimulatorWithDeviceName:(NSString *)deviceName completion:(void (^)(NSError *))completion;
 
-- (BOOL)useSimulatorWithDeviceUDID:(NSUUID *)deviceUDID;
+- (BOOL)useSimulatorWithDeviceUDID:(NSUUID *)deviceUDID withError:(NSError **)error;
 
 - (BOOL)uninstallApplicationAndReturnError:(NSError **)error;
 
@@ -37,7 +36,7 @@
 
 - (BOOL)installApplicationAndReturnError:(NSError *__autoreleasing *)error;
 
-- (void)launchApplicationAndExecuteTestsWithParser:(BPTreeParser *)parser andCompletion:(void (^)(NSError *, pid_t))completion;
+- (void)launchApplicationAndExecuteTestsWithParser:(BPTreeParser *)parser forAttempt:(NSInteger)attemptNumber andCompletion:(void (^)(NSError *, pid_t))completion;
 
 - (void)deleteSimulatorWithCompletion:(void (^)(NSError *error, BOOL success))completion;
 

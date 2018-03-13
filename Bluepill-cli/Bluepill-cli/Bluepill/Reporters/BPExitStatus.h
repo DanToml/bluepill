@@ -9,6 +9,7 @@
 
 #import <Foundation/Foundation.h>
 
+// TODO: we're setting the exit status as consecutive integers but the code uses it like bitfields
 typedef NS_ENUM(NSInteger, BPExitStatus) {
     BPExitStatusTestsAllPassed = 0,
     BPExitStatusTestsFailed = 1,
@@ -22,8 +23,10 @@ typedef NS_ENUM(NSInteger, BPExitStatus) {
     BPExitStatusSimulatorDeleted = 9,
     BPExitStatusUninstallAppFailed = 10,
     BPExitStatusSimulatorReuseFailed = 11,
+    BPExitStatusAppHangsBeforeTestStart = 12,
 };
 
+// TODO: I think we whould rip out the BPExitStatusProtocol thingy
 @protocol BPExitStatusProtocol <NSObject>
 
 - (BOOL)isExecutionComplete;

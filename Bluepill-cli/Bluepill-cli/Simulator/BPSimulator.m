@@ -33,6 +33,7 @@
 + (instancetype)simulatorWithConfiguration:(BPConfiguration *)config {
     BPSimulator *sim = [[self alloc] init];
     sim.config = config;
+    sim.monitor = [SimulatorMonitor sharedInstanceWithConfig:config];
     return sim;
 }
 
@@ -68,10 +69,6 @@
                                    completion(error);
                                });
                            } else {
-                               if (__self.config.simulatorPreferencesFile) {
-                                   [__self copySimulatorPreferencesFile:__self.config.simulatorPreferencesFile];
-                               }
-
                                dispatch_async(dispatch_get_main_queue(), ^{
                                    [__self bootWithCompletion:^(NSError *error) {
                                        dispatch_async(dispatch_get_main_queue(), ^{
@@ -83,49 +80,27 @@
                        }];
 }
 
-- (NSURL *)preferencesFile {
-    return [NSURL fileURLWithPath:kSimulatorLibraryPath relativeToURL:[NSURL fileURLWithPath:self.device.dataPath]];
-}
-
-- (void)copySimulatorPreferencesFile:(NSString *)newPreferencesFile {
-
-    NSURL *source = [NSURL fileURLWithPath:newPreferencesFile];
-    NSURL *destination = self.preferencesFile;
-
-
-    [NSFileManager.defaultManager
-            createDirectoryAtURL:destination.URLByDeletingLastPathComponent
-     withIntermediateDirectories:YES
-                      attributes:nil
-                           error:nil];
-
-    [NSFileManager.defaultManager removeItemAtURL:destination error:nil];
-
-    NSError *copyError = nil;
-    [NSFileManager.defaultManager copyItemAtURL:source toURL:destination error:&copyError];
-
-    if (copyError) {
-        [BPUtils printInfo:ERROR withString:[NSString stringWithFormat:@"Failed copying GlobalPreferences plist: %@", [copyError localizedDescription]]];
-    }
-}
-
-- (BOOL)useSimulatorWithDeviceUDID:(NSUUID *)deviceUDID {
+- (BOOL)useSimulatorWithDeviceUDID:(NSUUID *)deviceUDID withError:(NSError **)error {
     self.device = [self findDeviceWithConfig:self.config andDeviceID:deviceUDID];
     if (!self.device) {
         [BPUtils printInfo:ERROR withString:@"SimDevice not found: %@", [deviceUDID UUIDString]];
+        *error = [NSError errorWithDomain:BPErrorDomain code:-1 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"SimDevice not found: %@", [deviceUDID UUIDString]]}];
         return NO;
     }
 
     if (![self.device.stateString isEqualToString:@"Booted"]) {
         [BPUtils printInfo:ERROR withString:@"SimDevice exists, but not booted: %@", [deviceUDID UUIDString]];
+        *error = [NSError errorWithDomain:BPErrorDomain code:-1 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"SimDevice exists, but not booted: %@", [deviceUDID UUIDString]]}];
+
         return NO;
     }
 
     if (!self.config.headlessMode) {
         self.app = [self findSimGUIApp];
         if (!self.app) {
-            [BPUtils printInfo:ERROR withString:@"SimDevice running, but no running Simulator App in non-headless mode: %@",
-                                                 [deviceUDID UUIDString]];
+            NSString *errMsg = [NSString stringWithFormat:@"SimDevice running, but no running Simulator App in non-headless mode: %@",[deviceUDID UUIDString]];
+            [BPUtils printInfo:ERROR withString:@"SimDevice running, but no running Simulator App in non-headless mode: %@",[deviceUDID UUIDString]];
+            *error = [NSError errorWithDomain:BPErrorDomain code:-1 userInfo:@{NSLocalizedDescriptionKey:errMsg}];
             return NO;
         }
     }
@@ -261,7 +236,7 @@
                                        error:error];
 }
 
-- (void)launchApplicationAndExecuteTestsWithParser:(BPTreeParser *)parser andCompletion:(void (^)(NSError *, pid_t))completion {
+- (void)launchApplicationAndExecuteTestsWithParser:(BPTreeParser *)parser forAttempt:(NSInteger)attemptNumber andCompletion:(void (^)(NSError *, pid_t))completion {
     NSString *hostBundleId = [SimulatorHelper bundleIdForPath:self.config.appBundlePath];
     NSString *hostAppExecPath = [SimulatorHelper executablePathforPath:self.config.appBundlePath];
 
@@ -294,6 +269,10 @@
     argsAndEnv[@"env"] = self.config.environmentVariables ?: @{};
     NSMutableDictionary *appLaunchEnvironment = [NSMutableDictionary dictionaryWithDictionary:[SimulatorHelper appLaunchEnvironmentWithBundleID:hostBundleId device:self.device config:self.config]];
     [appLaunchEnvironment addEntriesFromDictionary:argsAndEnv[@"env"]];
+
+    if (self.config.testing_Environment) {
+        appLaunchEnvironment[@"_BP_TEST_ATTEMPT_NUMBER"] = [NSString stringWithFormat:@"%ld", (long)attemptNumber];
+    }
 
     if (self.config.testing_CrashAppOnLaunch) {
         appLaunchEnvironment[@"_BP_TEST_CRASH_ON_LAUNCH"] = @"YES";
@@ -352,20 +331,21 @@
 
         if (error == nil) {
             [BPUtils printInfo:INFO withString:@"No error"];
+            __weak typeof(self) weakSelf = self;
             dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, pid, DISPATCH_PROC_EXIT, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0));
             dispatch_source_set_event_handler(source, ^{
                 dispatch_source_cancel(source);
             });
             dispatch_source_set_cancel_handler(source, ^{
                 blockSelf.monitor.appState = Completed;
-                // Post a APPCLOSED signal to the fifo
-                [blockSelf.stdOutHandle writeData:[@"\nBP_APP_PROC_ENDED\n" dataUsingEncoding:NSUTF8StringEncoding]];
+                [weakSelf.monitor onAppEnded];
             });
             dispatch_resume(source);
             self.stdOutHandle.readabilityHandler = ^(NSFileHandle *handle) {
                 // This callback occurs on a background thread
                 NSData *chunk = [handle availableData];
                 [parser handleChunkData:chunk];
+                [weakSelf.monitor onOutputReceived];
             };
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -469,5 +449,6 @@
     NSDictionary *appInfo = [self.device propertiesOfApplication:bundleID error:error];
     return appInfo;
 }
+
 
 @end

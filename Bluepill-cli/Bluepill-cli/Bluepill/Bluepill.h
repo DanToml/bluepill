@@ -11,12 +11,10 @@
 #import "BPExitStatus.h"
 
 @class BPConfiguration;
-@class BPSimulator;
 
 @interface Bluepill : NSObject
 
 @property (nonatomic, readonly) NSString *test_simulatorUDID;
-@property (nonatomic, readonly) BPSimulator *test_simulator;
 
 /*!
  * @discussion bp instance

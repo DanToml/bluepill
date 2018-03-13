@@ -15,7 +15,6 @@
 #import "BPUtils.h"
 #import <stdio.h>
 #import "BPConstants.h"
-#import "BPSimulator.h"
 
 /**
  * This test suite is the integration tests to make sure Bluepill instance is working properly
@@ -33,7 +32,6 @@
 - (void)setUp {
     [super setUp];
     
-    self.continueAfterFailure = NO;
     NSString *hostApplicationPath = [BPTestHelper sampleAppPath];
     NSString *testBundlePath = [BPTestHelper sampleAppNegativeTestsBundlePath];
     self.config = [[BPConfiguration alloc] initWithProgram:BP_SLAVE];
@@ -53,6 +51,8 @@
     self.config.junitOutput = NO;
     self.config.testRunnerAppPath = nil;
     self.config.testing_CrashAppOnLaunch = NO;
+    self.config.testing_Environment = NO;
+    self.config.testing_NoAppWillRun = NO;
     NSString *path = @"testScheme.xcscheme";
     self.config.schemePath = [[[NSBundle bundleForClass:[self class]] resourcePath] stringByAppendingPathComponent:path];
     [BPUtils quietMode:[BPUtils isBuildScript]];
@@ -94,16 +94,31 @@
     XCTAssert(exitCode == BPExitStatusAppCrashed, @"Expected: %ld Got: %ld", (long)BPExitStatusAppCrashed, (long)exitCode);
 }
 
-- (void)testAppThatHangsOnLaunch {
+- (void)testAppHangsOnBeforeTestStart {
+    [BPUtils enableDebugOutput:YES];
     NSString *testBundlePath = [BPTestHelper sampleAppBalancingTestsBundlePath];
     self.config.testBundlePath = testBundlePath;
     self.config.testing_HangAppOnLaunch = YES;
     self.config.stuckTimeout = @3;
     BPExitStatus exitCode = [[[Bluepill alloc] initWithConfiguration:self.config] run];
-    XCTAssert(exitCode == BPExitStatusSimulatorCrashed);
+    XCTAssert(exitCode == BPExitStatusAppHangsBeforeTestStart);
 }
 
-- (void)testRecoverSimulatorOnCrash {
+- (void)testTestcaseTimeout {
+    [BPUtils enableDebugOutput:NO];
+    NSString *testBundlePath = [BPTestHelper sampleAppTestTimeoutTests];
+    self.config.testBundlePath = testBundlePath;
+    self.config.stuckTimeout = @8;
+    self.config.testCaseTimeout = @15;
+    self.config.failureTolerance = @2;
+    self.config.errorRetriesCount = @3;
+    self.config.onlyRetryFailed = YES;
+    BPExitStatus exitCode = [[[Bluepill alloc] initWithConfiguration:self.config] run];
+    XCTAssert(exitCode == BPExitStatusTestTimeout);
+}
+
+
+- (void)testRecoverSimulatorOnAppHangsBeforeTestStart {
     NSString *tempDir = NSTemporaryDirectory();
     NSString *outputDir = [BPUtils mkdtemp:[NSString stringWithFormat:@"%@/RecoverSimulatorOnCrash", tempDir] withError:nil];
     self.config.outputDirectory = outputDir;
@@ -115,11 +130,10 @@
     self.config.failureTolerance = @0;
     self.config.errorRetriesCount = @1;
     BPExitStatus exitCode = [[[Bluepill alloc] initWithConfiguration:self.config] run];
-    XCTAssert(exitCode == BPExitStatusSimulatorCrashed, @"Expected: %ld Got: %ld", (long)BPExitStatusSimulatorCrashed, (long)exitCode);
-
-    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"1-simulator.log"];
-    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"2-simulator.log"];
-    NSString *simulator3Path = [outputDir stringByAppendingPathComponent:@"3-simulator.log"];
+    XCTAssert(exitCode == BPExitStatusAppHangsBeforeTestStart, @"Expected: %ld Got: %ld", (long)BPExitStatusAppHangsBeforeTestStart, (long)exitCode);
+    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"attempt_1-simulator.log"];
+    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"attempt_2-simulator.log"];
+    NSString *simulator3Path = [outputDir stringByAppendingPathComponent:@"attempt_3-simulator.log"];
     NSString *log1 = [NSString stringWithContentsOfFile:simulator1Path encoding:NSUTF8StringEncoding error:nil];
     NSString *log2 = [NSString stringWithContentsOfFile:simulator2Path encoding:NSUTF8StringEncoding error:nil];
     NSString *log3 = [NSString stringWithContentsOfFile:simulator3Path encoding:NSUTF8StringEncoding error:nil];
@@ -209,6 +223,28 @@
     NSString *junitReportPath = [outputDir stringByAppendingPathComponent:@"TEST-BPSampleAppCrashingTests-results.xml"];
     NSLog(@"JUnit-REPORT: %@", junitReportPath);
     NSString *expectedFilePath = [[[NSBundle bundleForClass:[self class]] resourcePath] stringByAppendingPathComponent:@"crash_tests.xml"];
+    [self assertGotReport:junitReportPath isEqualToWantReport:expectedFilePath];
+}
+
+- (void)testReportWithAppCrashingAndThenPassingTestsSet {
+    [BPUtils enableDebugOutput:NO];
+    NSString *testBundlePath = [BPTestHelper sampleAppCrashingTestsBundlePath];
+    self.config.testBundlePath = testBundlePath;
+    NSString *tempDir = NSTemporaryDirectory();
+    NSError *error;
+    NSString *outputDir = [BPUtils mkdtemp:[NSString stringWithFormat:@"%@/AppCrashingTestsSetTempDir", tempDir] withError:&error];
+    // NSLog(@"output directory is %@", outputDir);
+    self.config.outputDirectory = outputDir;
+    self.config.junitOutput = YES;
+    self.config.errorRetriesCount = @3;
+    self.config.failureTolerance = @1;
+    self.config.onlyRetryFailed = YES;
+    self.config.testing_Environment = YES;
+    BPExitStatus exitCode = [[[Bluepill alloc ] initWithConfiguration:self.config] run];
+    XCTAssertTrue(exitCode == BPExitStatusTestsAllPassed);
+    NSString *junitReportPath = [outputDir stringByAppendingPathComponent:@"TEST-BPSampleAppCrashingTests-results.xml"];
+    NSLog(@"JUnit-REPORT: %@", junitReportPath);
+    NSString *expectedFilePath = [[[NSBundle bundleForClass:[self class]] resourcePath] stringByAppendingPathComponent:@"crash_tests_with_retry_2.xml"];
     [self assertGotReport:junitReportPath isEqualToWantReport:expectedFilePath];
 }
 
@@ -312,13 +348,13 @@
     self.config.saveDiagnosticsOnError = YES;
     BPExitStatus exitCode = [[[Bluepill alloc ] initWithConfiguration:self.config] run];
     // Make sure all tests started on the first run
-    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"1-simulator.log"];
+    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"attempt_1-simulator.log"];
     NSString *log1 = [NSString stringWithContentsOfFile:simulator1Path encoding:NSUTF8StringEncoding error:nil];
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertFailure]' started."].location != NSNotFound);
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertTrue]' started."].location != NSNotFound);
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testRaiseException]' started."].location != NSNotFound);
     // Make sure all tests started on the second run (because `onlyRetryFailed` defaults to NO)
-    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"2-simulator.log"];
+    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"attempt_2-simulator.log"];
     NSString *log2 = [NSString stringWithContentsOfFile:simulator2Path encoding:NSUTF8StringEncoding error:nil];
     XCTAssert([log2 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertFailure]' started."].location != NSNotFound);
     XCTAssert([log2 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertTrue]' started."].location != NSNotFound);
@@ -351,13 +387,13 @@
     BPExitStatus exitCode = [[[Bluepill alloc ] initWithConfiguration:self.config] run];
     XCTAssert(exitCode == BPExitStatusTestsFailed);
     // Make sure all tests started on the first run
-    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"1-simulator.log"];
+    NSString *simulator1Path = [outputDir stringByAppendingPathComponent:@"attempt_1-simulator.log"];
     NSString *log1 = [NSString stringWithContentsOfFile:simulator1Path encoding:NSUTF8StringEncoding error:nil];
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertFailure]' started."].location != NSNotFound);
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertTrue]' started."].location != NSNotFound);
     XCTAssert([log1 rangeOfString:@"Test Case '-[BPAppNegativeTests testRaiseException]' started."].location != NSNotFound);
     // Make sure only failing tests started on the second run
-    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"2-simulator.log"];
+    NSString *simulator2Path = [outputDir stringByAppendingPathComponent:@"attempt_2-simulator.log"];
     NSString *log2 = [NSString stringWithContentsOfFile:simulator2Path encoding:NSUTF8StringEncoding error:nil];
     XCTAssert([log2 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertFailure]' started."].location != NSNotFound);
     XCTAssert([log2 rangeOfString:@"Test Case '-[BPAppNegativeTests testAssertTrue]' started."].location == NSNotFound);
@@ -549,34 +585,6 @@
         BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:filePath];
         XCTAssert(fileExists);
     }
-}
-
-- (void)testCopySimulatorPreferencesFile {
-    self.config.simulatorPreferencesFile = [BPTestHelper.resourceFolderPath stringByAppendingPathComponent:@"simulator-preferences.plist"];
-
-    NSString *testBundlePath = [BPTestHelper sampleAppBalancingTestsBundlePath];
-    self.config.testBundlePath = testBundlePath;
-    self.config.keepSimulator = YES;
-
-    Bluepill *bp = [[Bluepill alloc ] initWithConfiguration:self.config];
-    BPExitStatus exitCode = [bp run];
-    XCTAssert(exitCode == BPExitStatusTestsAllPassed);
-    XCTAssertNotNil(bp.test_simulatorUDID);
-
-    NSURL *preferencesFile = bp.test_simulator.preferencesFile;
-
-    NSDictionary *plist = [[NSDictionary alloc] initWithContentsOfURL:preferencesFile];
-    XCTAssertEqualObjects(@"en_CH", plist[@"AppleLocale"]);
-
-    self.config.deleteSimUDID = bp.test_simulatorUDID;
-    XCTAssertNotNil(self.config.deleteSimUDID);
-
-    Bluepill *bp2 = [[Bluepill alloc ] initWithConfiguration:self.config];
-    BPExitStatus exitCode2 = [bp2 run];
-    XCTAssert(exitCode2 == BPExitStatusSimulatorDeleted);
-    XCTAssertEqualObjects(self.config.deleteSimUDID, bp2.test_simulatorUDID);
-
-    XCTAssert([[NSDictionary alloc] initWithContentsOfURL:preferencesFile] == nil);
 }
 
 - (void)testTakingScreenshotWithFailingTestsSetWithRetries {
